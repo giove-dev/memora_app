@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App Note con Supabase</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Supabase JS Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-[#121212] text-white min-h-screen flex flex-col items-center justify-center p-4">
+
+  <div class="bg-[#181818] p-8 rounded-2xl shadow-2xl max-w-md w-full border border-zinc-800">
+    <h1 class="text-2xl font-bold mb-4 text-center">📝 I Miei Appunti</h1>
+
+    <!-- Sezione Autenticazione (Login / Registrazione) -->
+    <div id="auth-section" class="flex flex-col gap-4">
+      <p class="text-zinc-400 text-center text-sm">Accedi o registrati per gestire le tue note in sicurezza.</p>
+      <input type="email" id="email" placeholder="La tua email" class="bg-zinc-900 border border-zinc-700 p-3 rounded-xl text-white focus:outline-none focus:border-[#1DB954]">
+      <input type="password" id="password" placeholder="Password" class="bg-zinc-900 border border-zinc-700 p-3 rounded-xl text-white focus:outline-none focus:border-[#1DB954]">
+      
+      <div class="flex gap-2">
+        <button onclick="signIn()" class="flex-1 bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold py-3 rounded-xl transition duration-200">Accedi</button>
+        <button onclick="signUp()" class="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-white font-medium py-3 rounded-xl transition duration-200">Registrati</button>
+      </div>
+    </div>
+
+    <!-- Sezione Note (Visibile solo dopo il login) -->
+    <div id="app-section" class="hidden flex flex-col gap-4">
+      <div class="flex justify-between items-center mb-2">
+        <span id="user-email" class="text-sm text-zinc-400"></span>
+        <button onclick="signOut()" class="text-xs text-red-400 hover:underline">Esci</button>
+      </div>
+
+      <!-- ID nascosto per tracciare se stiamo creando o modificando -->
+      <input type="hidden" id="edit-note-id">
+
+      <input type="text" id="note-title" placeholder="Titolo nota..." class="bg-zinc-900 border border-zinc-700 p-3 rounded-xl text-white focus:outline-none focus:border-[#1DB954]">
+      <textarea id="note-content" placeholder="Scrivi il contenuto..." class="bg-zinc-900 border border-zinc-700 p-3 rounded-xl text-white focus:outline-none focus:border-[#1DB954] h-24"></textarea>
+      
+      <div class="flex gap-2">
+        <button id="save-btn" onclick="saveNote()" class="flex-1 bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold py-3 rounded-xl transition duration-200">Salva Nota</button>
+        <button id="cancel-btn" onclick="cancelEdit()" class="hidden bg-zinc-700 hover:bg-zinc-600 text-white font-semibold py-3 px-4 rounded-xl transition duration-200">Annulla</button>
+      </div>
+
+      <div id="notes-list" class="flex flex-col gap-3 mt-4 max-h-60 overflow-y-auto">
+        <!-- Le note verranno caricate qui dinamicamente -->
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // ⚠️ INSERISCI QUI I TUOI DATI DI SUPABASE ⚠️
+    const SUPABASE_URL = 'https://adxifwpwysfkiczchlxd.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkeGlmd3B3eXNma2ljemNobHhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0MTI4OTYsImV4cCI6MjEwOTk4ODg5Nn0.JqlpjlhA0aQafTSxue4ANEXeNYbqQ3vDVy7fXRhgu8k';
+
+    // Inizializzazione CLIENT (messa subito all'inizio per evitare errori)
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Controlla se l'utente è già loggato
+    async function checkUser() {
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      if (session) {
+        showApp(session.user);
+      } else {
+        showAuth();
+      }
+    }
+
+    async function signUp() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      if (error) alert(error.message);
+      else alert('Registrazione completata! Controlla la mail se è richiesta la conferma, oppure prova ad accedere.');
+    }
+
+    async function signIn() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) alert(error.message);
+      else checkUser();
+    }
+
+    async function signOut() {
+      await supabaseClient.auth.signOut();
+      showAuth();
+    }
+
+    function showAuth() {
+      document.getElementById('auth-section').classList.remove('hidden');
+      document.getElementById('app-section').classList.add('hidden');
+    }
+
+    function showApp(user) {
+      document.getElementById('auth-section').classList.add('hidden');
+      document.getElementById('app-section').classList.remove('hidden');
+      document.getElementById('user-email').innerText = user.email;
+      loadNotes();
+    }
+
+    // --- GESTIONE CRUD NOTE (Create, Read, Update, Delete) ---
+
+    async function saveNote() {
+      const title = document.getElementById('note-title').value.trim();
+      const content = document.getElementById('note-content').value.trim();
+      const editId = document.getElementById('edit-note-id').value;
+
+      if (!title) return alert('Inserisci un titolo!');
+
+      const { data: { user } } = await supabaseClient.auth.getUser();
+
+      if (editId) {
+        // Modalità Modifica (UPDATE)
+        const { error } = await supabaseClient
+          .from('notes')
+          .update({ title, content })
+          .eq('id', editId);
+
+        if (error) alert(error.message);
+        else cancelEdit();
+      } else {
+        // Modalità Creazione (INSERT)
+        const { error } = await supabaseClient
+          .from('notes')
+          .insert([{ title, content, user_id: user.id }]);
+
+        if (error) alert(error.message);
+        else resetForm();
+      }
+
+      loadNotes();
+    }
+
+    async function loadNotes() {
+      const { data, error } = await supabaseClient
+        .from('notes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      const listDiv = document.getElementById('notes-list');
+      listDiv.innerHTML = '';
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      if (data.length === 0) {
+        listDiv.innerHTML = '<p class="text-zinc-500 text-center text-sm">Nessuna nota trovata.</p>';
+        return;
+      }
+
+      data.forEach(note => {
+        const item = document.createElement('div');
+        item.className = 'bg-zinc-900 border border-zinc-800 p-3 rounded-xl flex justify-between items-start gap-2';
+        
+        const safeTitle = note.title.replace(/'/g, "\\'");
+        const safeContent = (note.content || '').replace(/'/g, "\\'");
+
+        item.innerHTML = `
+          <div class="flex-1 overflow-hidden">
+            <h3 class="font-bold text-sm text-white truncate">${note.title}</h3>
+            <p class="text-zinc-400 text-xs mt-1 break-words">${note.content || ''}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="startEdit(${note.id}, '${safeTitle}', '${safeContent}')" class="text-zinc-400 hover:text-white text-xs">✏️</button>
+            <button onclick="deleteNote(${note.id})" class="text-zinc-500 hover:text-red-400 text-xs">🗑️</button>
+          </div>
+        `;
+        listDiv.appendChild(item);
+      });
+    }
+
+    function startEdit(id, title, content) {
+      document.getElementById('edit-note-id').value = id;
+      document.getElementById('note-title').value = title;
+      document.getElementById('note-content').value = content;
+      
+      document.getElementById('save-btn').innerText = 'Aggiorna Nota';
+      document.getElementById('cancel-btn').classList.remove('hidden');
+    }
+
+    function cancelEdit() {
+      document.getElementById('edit-note-id').value = '';
+      resetForm();
+    }
+
+    function resetForm() {
+      document.getElementById('note-title').value = '';
+      document.getElementById('note-content').value = '';
+      document.getElementById('save-btn').innerText = 'Salva Nota';
+      document.getElementById('cancel-btn').classList.add('hidden');
+    }
+
+    async function deleteNote(id) {
+      if (!confirm('Sei sicuro di voler eliminare questa nota?')) return;
+
+      const { error } = await supabaseClient
+        .from('notes')
+        .delete()
+        .eq('id', id);
+
+      if (error) alert(error.message);
+      else loadNotes();
+    }
+
+    // Avvia il controllo sessione all'avvio
+    checkUser();
+  </script>
+</body>
+</html>
